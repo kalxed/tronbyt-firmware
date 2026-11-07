@@ -5,6 +5,7 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <esp_websocket_client.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
 #include <freertos/task.h>
@@ -989,6 +990,12 @@ void app_main(void) {
           (esp_timer_get_time() - fetch_start_us) / 1000;
 
       ESP_LOGI(TAG, "HTTP fetch returned in %lld ms", fetch_duration_ms);
+
+      wifi_ap_record_t ap_info;
+      if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        ESP_LOGI(TAG, "WiFi RSSI: %d dBm (channel %d)", ap_info.rssi,
+                 ap_info.primary);
+      }
 
       if (http_volume >= 0 && http_volume <= 100) {
         if ((uint8_t)http_volume != nvs_get_volume()) {
