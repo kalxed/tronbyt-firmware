@@ -1068,7 +1068,8 @@ void app_main(void) {
                    app_meta.id, app_meta.index, app_meta.count);
         }
 
-        int queued_counter = gfx_update(webp, len, app_dwell_secs);
+        int queued_counter =
+            gfx_update_with_meta(webp, len, app_dwell_secs, &app_meta);
         // Do not free(webp) here; ownership is transferred to gfx
         webp = NULL;
 

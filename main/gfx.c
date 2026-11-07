@@ -11,8 +11,10 @@
 
 #include "assets.h"
 #include "display.h"
+#include "gfx.h"
 #include "esp_timer.h"
 #include "nvs_settings.h"
+#include "remote.h"
 #include "version.h"
 
 static const char *TAG = "gfx";
@@ -33,9 +35,76 @@ struct gfx_state {
   esp_websocket_client_handle_t
       ws_handle;  // Websocket handle for sending notifications
   volatile bool paused;
+  struct app_meta meta;  // rotation position of buf (count 0 = none)
 };
 
 static struct gfx_state *_state = NULL;
+
+#ifdef CONFIG_IMAGE_CACHE
+// One slot per app in the server rotation, indexed by Tronbyt-App-Index.
+// Only touched by the gfx task.
+#define IMAGE_CACHE_MAX_APPS 256  // sanity limit on Tronbyt-App-Count
+
+struct cache_slot {
+  char id[32];
+  uint8_t *buf;
+  size_t len;
+  int32_t dwell_secs;
+};
+static struct cache_slot *s_cache = NULL;
+static int32_t s_cache_count = 0;
+
+static void cache_clear(void) {
+  for (int32_t i = 0; i < s_cache_count; i++) {
+    free(s_cache[i].buf);
+  }
+  free(s_cache);
+  s_cache = NULL;
+  s_cache_count = 0;
+}
+
+static void cache_store(const void *webp, size_t len, int32_t dwell_secs,
+                        const struct app_meta *meta) {
+  if (webp == NULL || len == 0 || meta == NULL || meta->count <= 0) return;
+  if (meta->count > IMAGE_CACHE_MAX_APPS) {
+    ESP_LOGW(TAG, "Image cache: %d apps exceeds limit, not cached",
+             (int)meta->count);
+    return;
+  }
+
+  // The rotation changed size (app added or removed): start over.
+  if (meta->count != s_cache_count) {
+    if (s_cache_count > 0) {
+      ESP_LOGI(TAG, "Image cache: rotation changed from %d to %d apps, clearing",
+               (int)s_cache_count, (int)meta->count);
+    }
+    cache_clear();
+    s_cache = heap_caps_calloc(meta->count, sizeof(*s_cache),
+                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_cache == NULL) {
+      ESP_LOGW(TAG, "Image cache: no memory for %d slots", (int)meta->count);
+      return;
+    }
+    s_cache_count = meta->count;
+  }
+
+  uint8_t *copy = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (copy == NULL) {
+    ESP_LOGW(TAG, "Image cache: no memory for %zu bytes, not cached", len);
+    return;
+  }
+  memcpy(copy, webp, len);
+
+  struct cache_slot *slot = &s_cache[meta->index];
+  free(slot->buf);
+  strlcpy(slot->id, meta->id, sizeof(slot->id));
+  slot->buf = copy;
+  slot->len = len;
+  slot->dwell_secs = dwell_secs;
+  ESP_LOGI(TAG, "Image cache: stored id=%s in slot %d/%d (%zu bytes)",
+           slot->id, (int)meta->index, (int)s_cache_count, len);
+}
+#endif
 
 static void gfx_loop(void *arg);
 static int draw_webp(const uint8_t *buf, size_t len, int32_t dwell_secs,
@@ -238,6 +307,11 @@ static void send_websocket_notification(int counter) {
 }
 
 int gfx_update(void *webp, size_t len, int32_t dwell_secs) {
+  return gfx_update_with_meta(webp, len, dwell_secs, NULL);
+}
+
+int gfx_update_with_meta(void *webp, size_t len, int32_t dwell_secs,
+                         const struct app_meta *meta) {
   if (pdTRUE != xSemaphoreTake(_state->mutex, portMAX_DELAY)) {
     ESP_LOGE(TAG, "Could not take gfx mutex");
     return -1;  // Return negative on error
@@ -259,6 +333,11 @@ int gfx_update(void *webp, size_t len, int32_t dwell_secs) {
   _state->buf = webp;
   _state->len = len;
   _state->dwell_secs = dwell_secs;
+  if (meta != NULL) {
+    _state->meta = *meta;
+  } else {
+    memset(&_state->meta, 0, sizeof(_state->meta));
+  }
   _state->counter++;
   int counter = _state->counter;
   ESP_LOGI(TAG, "Queued image counter=%d size=%zu dwell=%d", counter, len,
@@ -367,6 +446,7 @@ static void gfx_loop(void *args) {
   size_t len = 0;
   int32_t dwell_secs = 0;
   int counter = -1;
+  static struct app_meta meta;  // static: keeps it off the small task stack
   ESP_LOGI(TAG, "Graphics loop running on core %d", xPortGetCoreID());
 
   for (;;) {
@@ -393,6 +473,7 @@ static void gfx_loop(void *args) {
       webp = _state->buf;
       len = _state->len;
       dwell_secs = _state->dwell_secs;
+      meta = _state->meta;
       _state->buf = NULL;  // gfx_loop now owns the buffer
       counter = _state->counter;
       _state->loaded_counter = counter;  // Signal that we've loaded this image
@@ -408,6 +489,9 @@ static void gfx_loop(void *args) {
     if (loaded) {
       // Send websocket notification that we're now displaying this image
       send_websocket_notification(counter);
+#ifdef CONFIG_IMAGE_CACHE
+      cache_store(webp, len, dwell_secs, &meta);
+#endif
     }
 
     static UBaseType_t last_stack_free = 0;

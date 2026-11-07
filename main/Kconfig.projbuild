@@ -77,6 +77,15 @@ menu "Application Configuration"
         help
             Enable WiFi minimum modem power saving mode.
 
+    config IMAGE_CACHE
+        bool "Cache images by rotation position"
+        default n
+        help
+            Keep a copy of each app image in PSRAM, in the slot given by the
+            server's Tronbyt-App-Index / Tronbyt-App-Count headers, so the
+            display can keep rotating while downloads are slow or fail.
+            Images without a position (pushes, pinned apps) are not cached.
+
     config SKIP_DISPLAY_VERSION
         bool "Skip Display Version"
         default n
