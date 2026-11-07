@@ -1,4 +1,5 @@
 #include <esp_crt_bundle.h>
+#include <inttypes.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <esp_log.h>
@@ -273,12 +274,33 @@ int remote_get(const char* url, uint8_t** buf, size_t* len,
   }
 
   // Tell the server which app is actually on screen (it may be a cached
-  // image), so its "Now Showing" matches the display.
+  // image), where it is in the rotation and since when, so its "Now Showing"
+  // matches the display and can follow it between requests.
   char displaying_id[32];
-  if (gfx_get_displaying_id(displaying_id, sizeof(displaying_id))) {
+  int32_t displaying_index = -1;
+  uint32_t displaying_ms = 0;
+  int64_t displaying_since = 0;
+  if (gfx_get_displaying(displaying_id, sizeof(displaying_id),
+                         &displaying_index, &displaying_ms, &displaying_since)) {
+    char num[24];
     esp_http_client_set_header(http, "Tronbyt-Displaying", displaying_id);
-    ESP_LOGI(TAG, "Reporting displayed app: %s", displaying_id);
+    snprintf(num, sizeof(num), "%" PRId32, displaying_index);
+    esp_http_client_set_header(http, "Tronbyt-Displaying-Index", num);
+    snprintf(num, sizeof(num), "%" PRIu32, displaying_ms);
+    esp_http_client_set_header(http, "Tronbyt-Displaying-Ms", num);
+    if (displaying_since > 0) {
+      // Absolute start time (SNTP-synced clock): independent of how long
+      // this request takes to reach the server.
+      snprintf(num, sizeof(num), "%" PRId64, displaying_since);
+      esp_http_client_set_header(http, "Tronbyt-Displaying-Since", num);
+    }
+    ESP_LOGI(TAG, "Reporting displayed app: %s (slot %" PRId32 ", %" PRIu32 " ms)",
+             displaying_id, displaying_index, displaying_ms);
   }
+#ifdef CONFIG_IMAGE_CACHE
+  // Lets the server know this device keeps rotating from its cache.
+  esp_http_client_set_header(http, "Tronbyt-Image-Cache", "1");
+#endif
 
   char api_key[MAX_API_KEY_LEN + 1];
   if (nvs_get_api_key(api_key, sizeof(api_key)) == ESP_OK &&

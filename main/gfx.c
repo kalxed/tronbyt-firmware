@@ -7,6 +7,7 @@
 #include <http_parser.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <webp/demux.h>
 
 #include "assets.h"
@@ -37,7 +38,18 @@ struct gfx_state {
   volatile bool paused;
   struct app_meta meta;  // rotation position of buf (count 0 = none)
   char displaying_id[32];  // app ID of the image on screen ("" = none)
+  int32_t displaying_index;      // its rotation position
+  int64_t displaying_since_us;   // when it appeared on screen
+  int64_t displaying_since_unix_ms;  // same in wall-clock time, 0 if unsynced
 };
+
+// Wall-clock time in Unix ms, or 0 while SNTP has not set the clock yet.
+static int64_t unix_ms_now(void) {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  if (tv.tv_sec < 1700000000) return 0;  // before Nov 2023: not synced
+  return (int64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
 
 static struct gfx_state *_state = NULL;
 
@@ -436,15 +448,22 @@ int gfx_get_loaded_counter(void) {
   return loaded;
 }
 
-bool gfx_get_displaying_id(char *out, size_t out_len) {
-  if (!_state || out == NULL || out_len == 0) return false;
+bool gfx_get_displaying(char *id, size_t id_len, int32_t *index,
+                        uint32_t *elapsed_ms, int64_t *since_unix_ms) {
+  if (!_state || id == NULL || id_len == 0) return false;
   if (pdTRUE != xSemaphoreTake(_state->mutex, portMAX_DELAY)) {
     ESP_LOGE(TAG, "Could not take gfx mutex");
     return false;
   }
-  strlcpy(out, _state->displaying_id, out_len);
+  strlcpy(id, _state->displaying_id, id_len);
+  if (index != NULL) *index = _state->displaying_index;
+  if (elapsed_ms != NULL) {
+    *elapsed_ms =
+        (uint32_t)((esp_timer_get_time() - _state->displaying_since_us) / 1000);
+  }
+  if (since_unix_ms != NULL) *since_unix_ms = _state->displaying_since_unix_ms;
   xSemaphoreGive(_state->mutex);
-  return out[0] != '\0';
+  return id[0] != '\0';
 }
 
 int gfx_display_asset(const char *asset_type) {
@@ -540,6 +559,9 @@ static void gfx_loop(void *args) {
       meta = _state->meta;
       strlcpy(_state->displaying_id, meta.count > 0 ? meta.id : "",
               sizeof(_state->displaying_id));
+      _state->displaying_index = meta.count > 0 ? meta.index : -1;
+      _state->displaying_since_us = esp_timer_get_time();
+      _state->displaying_since_unix_ms = unix_ms_now();
       _state->buf = NULL;  // gfx_loop now owns the buffer
       counter = _state->counter;
       _state->loaded_counter = counter;  // Signal that we've loaded this image
@@ -574,6 +596,9 @@ static void gfx_loop(void *args) {
           s_played++;
           strlcpy(_state->displaying_id, meta.id,
                   sizeof(_state->displaying_id));
+          _state->displaying_index = next;
+          _state->displaying_since_us = esp_timer_get_time();
+          _state->displaying_since_unix_ms = unix_ms_now();
           ESP_LOGI(TAG, "Image cache: download pending, showing id=%s from slot %d/%d",
                    meta.id, (int)next, (int)s_cache_count - 1);
         }
