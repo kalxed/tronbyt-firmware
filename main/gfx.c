@@ -54,6 +54,14 @@ struct cache_slot {
 static struct cache_slot *s_cache = NULL;
 static int32_t s_cache_count = 0;
 
+// Playback position, protected by the gfx mutex: s_cursor is the slot on
+// screen, s_fresh the slot of the last image shown fresh from the server,
+// and s_played how many cached images were shown since (can exceed the
+// rotation length during a long stall).
+static int32_t s_cursor = -1;
+static int32_t s_fresh = -1;
+static int32_t s_played = 0;
+
 static void cache_clear(void) {
   for (int32_t i = 0; i < s_cache_count; i++) {
     free(s_cache[i].buf);
@@ -61,6 +69,35 @@ static void cache_clear(void) {
   free(s_cache);
   s_cache = NULL;
   s_cache_count = 0;
+  s_cursor = -1;
+  s_fresh = -1;
+  s_played = 0;
+}
+
+// The next filled slot after the one on screen, or -1 if there is none.
+static int32_t cache_next_slot(void) {
+  if (s_cursor < 0 || s_cache_count <= 0) return -1;
+  for (int32_t step = 1; step < s_cache_count; step++) {
+    int32_t i = (s_cursor + step) % s_cache_count;
+    if (s_cache[i].buf != NULL) return i;
+  }
+  return -1;
+}
+
+// Whether a fresh image for this slot should be shown, or was already shown
+// from the cache while its download was pending (then showing it would step
+// back in the rotation).
+static bool cache_is_due(int32_t index) {
+  // Nothing shown from the cache since the last fresh image: normal case.
+  if (s_fresh < 0 || s_played == 0 || s_cache_count <= 1) return true;
+  // Exactly the app the cache would show next: show the fresh copy instead.
+  if (index == cache_next_slot()) return true;
+  // The cache went all the way around: every app was shown since.
+  if (s_played >= s_cache_count) return false;
+  // Shown since the last fresh image if it lies between that one and the
+  // slot on screen; anything further ahead has not been shown yet.
+  int32_t dist = (index - s_fresh + s_cache_count) % s_cache_count;
+  return dist > s_played;
 }
 
 static void cache_store(const void *webp, size_t len, int32_t dwell_secs,
@@ -317,6 +354,21 @@ int gfx_update_with_meta(void *webp, size_t len, int32_t dwell_secs,
     return -1;  // Return negative on error
   }
 
+#ifdef CONFIG_IMAGE_CACHE
+  if (meta != NULL && meta->count > 0) {
+    cache_store(webp, len, dwell_secs, meta);
+    if (!cache_is_due(meta->index)) {
+      // Shown from the cache while this download was pending: keep it as the
+      // slot's fresh copy, but don't show the same app twice in a row.
+      ESP_LOGI(TAG, "Image cache: id=%s (slot %d/%d) already shown, not queued",
+               meta->id, (int)meta->index, (int)meta->count - 1);
+      free(webp);
+      xSemaphoreGive(_state->mutex);
+      return GFX_UPDATE_CACHED_ONLY;
+    }
+  }
+#endif
+
   // If a new frame arrives before the previous one is consumed by the gfx task,
   // free the old buffer here to prevent a memory leak (frame-dropping
   // strategy).
@@ -479,7 +531,39 @@ static void gfx_loop(void *args) {
       _state->loaded_counter = counter;  // Signal that we've loaded this image
       if (isAnimating == -1 && !_state->paused) isAnimating = 1;
       loaded = true;
+#ifdef CONFIG_IMAGE_CACHE
+      if (meta.count > 0 && meta.count == s_cache_count) {
+        s_fresh = meta.index;
+        s_cursor = meta.index;
+        s_played = 0;
+      }
+#endif
     }
+#ifdef CONFIG_IMAGE_CACHE
+    else if (webp != NULL && meta.count > 0) {
+      // Nothing new arrived during the last dwell time (download pending):
+      // show the next cached app instead of repeating this one.
+      int32_t next = cache_next_slot();
+      if (next >= 0) {
+        struct cache_slot *slot = &s_cache[next];
+        uint8_t *copy =
+            heap_caps_malloc(slot->len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (copy != NULL) {
+          memcpy(copy, slot->buf, slot->len);
+          free(webp);
+          webp = copy;
+          len = slot->len;
+          dwell_secs = slot->dwell_secs;
+          strlcpy(meta.id, slot->id, sizeof(meta.id));
+          meta.index = next;
+          s_cursor = next;
+          s_played++;
+          ESP_LOGI(TAG, "Image cache: download pending, showing id=%s from slot %d/%d",
+                   meta.id, (int)next, (int)s_cache_count - 1);
+        }
+      }
+    }
+#endif
 
     if (pdTRUE != xSemaphoreGive(_state->mutex)) {
       ESP_LOGE(TAG, "Could not give gfx mutex");
@@ -489,9 +573,6 @@ static void gfx_loop(void *args) {
     if (loaded) {
       // Send websocket notification that we're now displaying this image
       send_websocket_notification(counter);
-#ifdef CONFIG_IMAGE_CACHE
-      cache_store(webp, len, dwell_secs, &meta);
-#endif
     }
 
     static UBaseType_t last_stack_free = 0;
