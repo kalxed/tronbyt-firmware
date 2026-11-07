@@ -1065,7 +1065,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "Queuing new webp (%d bytes)", len);
         if (app_meta.count > 0) {
           ESP_LOGI(TAG, "App position: id=%s index=%" PRId32 "/%" PRId32,
-                   app_meta.id, app_meta.index, app_meta.count);
+                   app_meta.id, app_meta.index, app_meta.count - 1);
         }
 
         int queued_counter =

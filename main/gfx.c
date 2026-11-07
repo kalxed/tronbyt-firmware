@@ -102,7 +102,7 @@ static void cache_store(const void *webp, size_t len, int32_t dwell_secs,
   slot->len = len;
   slot->dwell_secs = dwell_secs;
   ESP_LOGI(TAG, "Image cache: stored id=%s in slot %d/%d (%zu bytes)",
-           slot->id, (int)meta->index, (int)s_cache_count, len);
+           slot->id, (int)meta->index, (int)s_cache_count - 1, len);
 }
 #endif
 
