@@ -272,6 +272,14 @@ int remote_get(const char* url, uint8_t** buf, size_t* len,
     ESP_LOGE(TAG, "Failed to set firmware version header");
   }
 
+  // Tell the server which app is actually on screen (it may be a cached
+  // image), so its "Now Showing" matches the display.
+  char displaying_id[32];
+  if (gfx_get_displaying_id(displaying_id, sizeof(displaying_id))) {
+    esp_http_client_set_header(http, "Tronbyt-Displaying", displaying_id);
+    ESP_LOGI(TAG, "Reporting displayed app: %s", displaying_id);
+  }
+
   char api_key[MAX_API_KEY_LEN + 1];
   if (nvs_get_api_key(api_key, sizeof(api_key)) == ESP_OK &&
       strlen(api_key) > 0) {

@@ -36,6 +36,7 @@ struct gfx_state {
       ws_handle;  // Websocket handle for sending notifications
   volatile bool paused;
   struct app_meta meta;  // rotation position of buf (count 0 = none)
+  char displaying_id[32];  // app ID of the image on screen ("" = none)
 };
 
 static struct gfx_state *_state = NULL;
@@ -435,6 +436,17 @@ int gfx_get_loaded_counter(void) {
   return loaded;
 }
 
+bool gfx_get_displaying_id(char *out, size_t out_len) {
+  if (!_state || out == NULL || out_len == 0) return false;
+  if (pdTRUE != xSemaphoreTake(_state->mutex, portMAX_DELAY)) {
+    ESP_LOGE(TAG, "Could not take gfx mutex");
+    return false;
+  }
+  strlcpy(out, _state->displaying_id, out_len);
+  xSemaphoreGive(_state->mutex);
+  return out[0] != '\0';
+}
+
 int gfx_display_asset(const char *asset_type) {
   const uint8_t *asset_data = NULL;
   size_t asset_len = 0;
@@ -526,6 +538,8 @@ static void gfx_loop(void *args) {
       len = _state->len;
       dwell_secs = _state->dwell_secs;
       meta = _state->meta;
+      strlcpy(_state->displaying_id, meta.count > 0 ? meta.id : "",
+              sizeof(_state->displaying_id));
       _state->buf = NULL;  // gfx_loop now owns the buffer
       counter = _state->counter;
       _state->loaded_counter = counter;  // Signal that we've loaded this image
@@ -558,6 +572,8 @@ static void gfx_loop(void *args) {
           meta.index = next;
           s_cursor = next;
           s_played++;
+          strlcpy(_state->displaying_id, meta.id,
+                  sizeof(_state->displaying_id));
           ESP_LOGI(TAG, "Image cache: download pending, showing id=%s from slot %d/%d",
                    meta.id, (int)next, (int)s_cache_count - 1);
         }
