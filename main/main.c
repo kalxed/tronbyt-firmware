@@ -978,6 +978,7 @@ void app_main(void) {
       char* sound = NULL;
       bool reboot_requested = false;
       int16_t http_volume = -1;
+      struct app_meta app_meta = {0};
 
       // Start timing the HTTP fetch
       int64_t fetch_start_us = esp_timer_get_time();
@@ -985,7 +986,7 @@ void app_main(void) {
                           remote_get(image_url, &webp, &len, &brightness_pct,
                                      &app_dwell_secs, &status_code, &ota_url,
                                      &new_image_url, &reboot_requested,
-                                     &sound, &http_volume);
+                                     &sound, &http_volume, &app_meta);
       int64_t fetch_duration_ms =
           (esp_timer_get_time() - fetch_start_us) / 1000;
 
@@ -1062,6 +1063,10 @@ void app_main(void) {
         // Successful remote_get
         display_set_brightness(brightness_pct);
         ESP_LOGI(TAG, "Queuing new webp (%d bytes)", len);
+        if (app_meta.count > 0) {
+          ESP_LOGI(TAG, "App position: id=%s index=%" PRId32 "/%" PRId32,
+                   app_meta.id, app_meta.index, app_meta.count);
+        }
 
         int queued_counter = gfx_update(webp, len, app_dwell_secs);
         // Do not free(webp) here; ownership is transferred to gfx

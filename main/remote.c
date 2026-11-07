@@ -12,6 +12,7 @@
 #include "display.h"
 #include "gfx.h"
 #include "nvs_settings.h"
+#include "remote.h"
 #include "sdkconfig.h"
 #include "version.h"
 
@@ -30,6 +31,7 @@ struct remote_state {
   char* sound;
   bool reboot_requested;
   bool oversize_detected;
+  struct app_meta app_meta;
 };
 
 static bool parse_header_bool(const char* value) {
@@ -121,6 +123,13 @@ static esp_err_t _httpCallback(esp_http_client_event_t* event) {
           ESP_LOGW(TAG, "Ignoring invalid Tronbyt-Volume: %s",
                    event->header_value);
         }
+      } else if (strcasecmp(event->header_key, "Tronbyt-App-Id") == 0) {
+        strlcpy(state->app_meta.id, event->header_value,
+                sizeof(state->app_meta.id));
+      } else if (strcasecmp(event->header_key, "Tronbyt-App-Index") == 0) {
+        state->app_meta.index = (int32_t)atoi(event->header_value);
+      } else if (strcasecmp(event->header_key, "Tronbyt-App-Count") == 0) {
+        state->app_meta.count = (int32_t)atoi(event->header_value);
       } else if (strcasecmp(event->header_key, "Tronbyt-Reboot") == 0) {
         state->reboot_requested = parse_header_bool(event->header_value);
         ESP_LOGI(TAG, "Tronbyt-Reboot value: %s", event->header_value);
@@ -217,7 +226,8 @@ static esp_err_t _httpCallback(esp_http_client_event_t* event) {
 int remote_get(const char* url, uint8_t** buf, size_t* len,
                uint8_t* brightness_pct, int32_t* dwell_secs,
                int* return_status_code, char** ota_url, char** image_url,
-               bool* reboot_requested, char** sound, int16_t* volume) {
+               bool* reboot_requested, char** sound, int16_t* volume,
+               struct app_meta* app_meta) {
   // State for processing the response
   struct remote_state state = {
       .buf =
@@ -233,6 +243,7 @@ int remote_get(const char* url, uint8_t** buf, size_t* len,
       .sound = NULL,
       .reboot_requested = false,
       .oversize_detected = false,
+      .app_meta = {.id = "", .index = -1, .count = 0},
   };
 
   if (state.buf == NULL) {
@@ -350,6 +361,14 @@ int remote_get(const char* url, uint8_t** buf, size_t* len,
   }
   if (volume != NULL) {
     *volume = state.volume;
+  }
+  if (app_meta != NULL) {
+    *app_meta = state.app_meta;
+    // Only trust a complete, consistent position.
+    if (app_meta->id[0] == '\0' || app_meta->count <= 0 ||
+        app_meta->index < 0 || app_meta->index >= app_meta->count) {
+      app_meta->count = 0;
+    }
   }
 
   esp_http_client_cleanup(http);
