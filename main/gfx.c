@@ -63,6 +63,7 @@ struct cache_slot {
   uint8_t *buf;
   size_t len;
   int32_t dwell_secs;
+  bool shown;  // on screen (fresh or cached) since the last fresh image
 };
 static struct cache_slot *s_cache = NULL;
 static int32_t s_cache_count = 0;
@@ -105,12 +106,18 @@ static bool cache_is_due(int32_t index) {
   if (s_fresh < 0 || s_played == 0 || s_cache_count <= 1) return true;
   // Exactly the app the cache would show next: show the fresh copy instead.
   if (index == cache_next_slot()) return true;
-  // The cache went all the way around: every app was shown since.
-  if (s_played >= s_cache_count) return false;
-  // Shown since the last fresh image if it lies between that one and the
-  // slot on screen; anything further ahead has not been shown yet.
-  int32_t dist = (index - s_fresh + s_cache_count) % s_cache_count;
-  return dist > s_played;
+  // Otherwise only if it has not been on screen since the last fresh image.
+  return !s_cache[index].shown;
+}
+
+// True once every app in the rotation has arrived at least once. Until then
+// cache playback would repeat the few apps it has, out of order.
+static bool cache_complete(void) {
+  if (s_cache_count <= 0) return false;
+  for (int32_t i = 0; i < s_cache_count; i++) {
+    if (s_cache[i].buf == NULL) return false;
+  }
+  return true;
 }
 
 static void cache_store(const void *webp, size_t len, int32_t dwell_secs,
@@ -572,11 +579,13 @@ static void gfx_loop(void *args) {
         s_fresh = meta.index;
         s_cursor = meta.index;
         s_played = 0;
+        for (int32_t i = 0; i < s_cache_count; i++) s_cache[i].shown = false;
+        s_cache[meta.index].shown = true;
       }
 #endif
     }
 #ifdef CONFIG_IMAGE_CACHE
-    else if (webp != NULL && meta.count > 0) {
+    else if (webp != NULL && meta.count > 0 && cache_complete()) {
       // Nothing new arrived during the last dwell time (download pending):
       // show the next cached app instead of repeating this one.
       int32_t next = cache_next_slot();
@@ -594,6 +603,7 @@ static void gfx_loop(void *args) {
           meta.index = next;
           s_cursor = next;
           s_played++;
+          slot->shown = true;
           strlcpy(_state->displaying_id, meta.id,
                   sizeof(_state->displaying_id));
           _state->displaying_index = next;
