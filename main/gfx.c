@@ -564,6 +564,7 @@ static int draw_webp(const uint8_t *buf, size_t len, int32_t dwell_secs,
   int64_t start_us = esp_timer_get_time();
 
   while (esp_timer_get_time() - start_us < dwell_us && *isAnimating != -1 && !_state->paused) {
+    int64_t run_start_us = esp_timer_get_time();
     int lastTimestamp = 0;
     int delay = 0;
     TickType_t drawStartTick = xTaskGetTickCount();
@@ -608,6 +609,15 @@ static int draw_webp(const uint8_t *buf, size_t len, int32_t dwell_secs,
         }
         vTaskDelay(pdMS_TO_TICKS(100));  // Check every 100ms
       }
+      break;
+    }
+
+    // Animations always play at least once and are never cut off. Start
+    // another run only if it fits completely in the remaining dwell time,
+    // so a long animation does not overrun its dwell by almost a full run.
+    int64_t now_us = esp_timer_get_time();
+    int64_t run_us = now_us - run_start_us;
+    if (now_us - start_us + run_us > dwell_us) {
       break;
     }
   }
