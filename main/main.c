@@ -968,6 +968,8 @@ void app_main(void) {
     // normal http
     ESP_LOGW(TAG, "HTTP Loop Start with URL: %s", image_url);
     uint8_t brightness_pct = nvs_get_brightness();
+    // Wait before retrying an unreachable server; doubles up to 30 s.
+    uint32_t retry_delay_ms = 1000;
     for (;;) {
       uint8_t* webp;
       size_t len;
@@ -1044,7 +1046,16 @@ void app_main(void) {
       if (fetch_failed) {
         ESP_LOGE(TAG, "No WiFi or Failed to get webp with code %d",
                  status_code);
-        vTaskDelay(pdMS_TO_TICKS(1 * 1000));
+        if (status_code == 0) {
+          // Back off while the server is unreachable: a new connection
+          // attempt every second keeps the radio busy and can make the
+          // display flicker. With the image cache the display keeps rotating.
+          ESP_LOGI(TAG, "Retrying in %u s", (unsigned)(retry_delay_ms / 1000));
+          vTaskDelay(pdMS_TO_TICKS(retry_delay_ms));
+          retry_delay_ms = retry_delay_ms >= 15000 ? 30000 : retry_delay_ms * 2;
+        } else {
+          vTaskDelay(pdMS_TO_TICKS(1 * 1000));
+        }
         draw_error_indicator_pixel();  // Add this
         if (status_code == 0) {
           ESP_LOGI(TAG, "No connection");
@@ -1061,6 +1072,7 @@ void app_main(void) {
         }
       } else {
         // Successful remote_get
+        retry_delay_ms = 1000;
         display_set_brightness(brightness_pct);
         ESP_LOGI(TAG, "Queuing new webp (%d bytes)", len);
         if (app_meta.count > 0) {
